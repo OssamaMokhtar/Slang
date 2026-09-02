@@ -4,6 +4,8 @@
 
 `TypeScript` · `React` · `Vite` · `Gemini` · `Web Audio`
 
+![Slang daily practice](docs/screenshot.png)
+
 ---
 
 ## The idea
