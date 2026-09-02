@@ -415,7 +415,16 @@ app.post("/api/generate-lesson-plan", async (req, res) => {
   }
 });
 
-// Configure Vite middleware in dev or static files in production
+// ---------------------------------------------------------------------------
+// Bootstrap
+//
+// On Vercel this module is imported by api/index.ts and the Express app is
+// used directly as the serverless handler - no port is bound, and static
+// assets are served by Vercel's CDN rather than by Express. Locally we bind
+// a port and mount Vite middleware.
+// ---------------------------------------------------------------------------
+export { app };
+
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -436,4 +445,8 @@ async function startServer() {
   });
 }
 
-startServer();
+// Only self-start when run directly. Importing this module (as the Vercel
+// function does) must not bind a port.
+if (!process.env.VERCEL) {
+  startServer();
+}

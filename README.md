@@ -35,6 +35,23 @@ cp .env.local.example .env.local    # add your GEMINI_API_KEY
 npm run dev
 ```
 
+## Deploying
+
+```bash
+vercel                                    # link the project
+vercel env add GEMINI_API_KEY production  # server-side only, never exposed
+vercel --prod
+```
+
+The same Express app serves local development and runs as the Vercel function
+(`api/index.ts`), so the API surface, rate limiting, and input sanitisation
+cannot drift between environments.
+
+> **Note on rate limiting:** the limiter holds state in memory. That is correct
+> for a single instance but only partially effective across serverless
+> instances — move it to a shared store (Vercel KV or Redis) before real
+> traffic.
+
 ## Status
 
 Working prototype — ~3,800 lines.
