@@ -1,6 +1,5 @@
 import express from "express";
 import path from "path";
-import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Schema, Type, Modality } from "@google/genai";
 
 const app = express();
@@ -427,6 +426,10 @@ export { app };
 
 async function startServer() {
   if (process.env.NODE_ENV !== "production") {
+    // Imported lazily: vite is a devDependency, and a static import here would
+    // be pulled into the Vercel function bundle, which installs production
+    // dependencies only - crashing the function with "Cannot find module".
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
