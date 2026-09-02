@@ -1,0 +1,351 @@
+import express from "express";
+import path from "path";
+import { createServer as createViteServer } from "vite";
+import { GoogleGenAI, Schema, Type, Modality } from "@google/genai";
+
+const app = express();
+const PORT = 3000;
+
+// Increase payload limits for handling base64 audio data
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ limit: "50mb", extended: true }));
+
+// Retrieve the API key
+const apiKey = process.env.GEMINI_API_KEY;
+
+// Lazy initialize Gemini as per instructions to prevent crashing on startup if key is missing
+let ai: GoogleGenAI | null = null;
+function getGemini(): GoogleGenAI {
+  if (!ai) {
+    if (!apiKey) {
+      throw new Error("GEMINI_API_KEY environment variable is required");
+    }
+    ai = new GoogleGenAI({
+      apiKey: apiKey,
+      httpOptions: {
+        headers: {
+          "User-Agent": "aistudio-build",
+        }
+      }
+    });
+  }
+  return ai;
+}
+
+const SYSTEM_PROMPT = `
+You are a compassionate, expert pronunciation coach for learners of English. 
+Input: A user profile, an audio recording, and optionally a target phoneme to focus on.
+Output: A JSON object adhering to the schema below.
+
+Your task is to analyze the audio (simulated analysis based on ASR and acoustic features logic) and return:
+1. Scores (0-100) for Overall, Pronunciation, and Intelligibility.
+2. Phoneme errors with timestamps (simulated relative to duration).
+3. Prosody deviations.
+4. A pitch contour comparison (simulated normalized data points).
+5. Actionable feedback.
+6. A pronunciation guide for the reference text, selecting 2-3 challenging words or sounds and explaining the mouth/tongue position required to say them correctly.
+
+Tone must be encouraging and specific. Use IPA only when necessary.
+
+LOGIC RULES:
+1. If a target phoneme is provided, the summary, scores, and feedback MUST prioritize the accuracy of that specific sound.
+2. **ACCENT GOAL LOGIC**: If 'accent_reduction_goal' is present in User Profile, YOU MUST evaluate pronunciation based on that specific dialect's standards.
+   - **Scoring**: Penalize deviations from the target accent's phonology (e.g., using a British /ɒ/ when aiming for American /ɑ/ in 'hot').
+   - **Feedback**: Specifically cite accent features if the user misses them.
+     - 'General American': Check for Rhoticity (/r/ in 'car'), Flap T ('water'), Vowel /æ/ ('cat').
+     - 'British (RP)': Check for Non-rhoticity, Trap-Bath split (long /ɑː/ in 'bath'), True T sounds.
+     - 'Australian': Check for Non-rhoticity, Dipthong shifts (/eɪ/ -> /æɪ/ in 'day'), Intonation (High Rising Terminal).
+     - 'American Southern': Check for Monophthongization of /aɪ/ ('ride' -> 'rahd'), Pin-Pen merger, Drawl (vowel breaking).
+   - **Drills**: IF accent errors are found, generate a drill of type 'accent_practice' focused on that feature.
+     - Example: "Practice the American 'flap t' in these words."
+     - Example: "Practice the British non-rhotic 'r' at the end of words."
+3. **ADVANCED LEARNER LOGIC**: If the User Profile level is 'advanced' AND the calculated overall_score >= 90:
+   - **Feedback Focus**: Shift entirely to **naturalness, rhythm, connected speech (linking, elision, assimilation), and idiomatic expressions**. Do NOT focus on basic phoneme articulation unless it impedes understanding.
+   - **Prioritized Actions**: Suggest advanced techniques like "using schwa for weak syllables", "linking words (catenation)", "assimilation of sounds", or "intonation for attitude".
+   - **Model Phrase**: Must be a complex, natural, and idiomatic sentence, spoken at full native speed (tempo_percent 100%).
+   - **Drills**: Generate varied and complex advanced exercises:
+     - 'connected_speech_challenge': Focus on Linking (C+V, V+V), Intrusion (/r/, /j/, /w/), Elision (dropped sounds like /t/ or /d/), or Assimilation. Example output: "Catenation: 'Stop_it' -> 'Sto-pit'".
+     - 'idiomatic_expression_practice': Practice common native phrases, collocations, or phrasal verbs. Example: "Hit the nail on the head".
+     - 'role_play': A complex, nuance-heavy scenario (e.g., "Politely disagreeing in a meeting").
+     - 'intonation_practice': Contrast meaning based on stress (e.g., "I didn't say *he* stole the money" vs "I didn't say he *stole* the money").
+     - 'accent_practice': Focus on specific vowel shifts or consonant features of the target accent.
+4. Otherwise (Beginner/Intermediate or Score < 90):
+   - Focus on clear articulation, specific phoneme errors, and basic intelligibility.
+   - Drills should be 'minimal_pairs' or simple 'repetition'.
+`;
+
+const analysisSchema: Schema = {
+  type: Type.OBJECT,
+  properties: {
+    summary: { type: Type.STRING, description: "Concise summary sentence <= 25 words" },
+    overall_score: { type: Type.INTEGER },
+    pronunciation_score: { type: Type.INTEGER },
+    intelligibility_score: { type: Type.INTEGER },
+    prioritized_actions: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING },
+      description: "Three prioritized corrective actions"
+    },
+    model_phrase: {
+      type: Type.OBJECT,
+      properties: {
+        text: { type: Type.STRING },
+        tempo_percent: { type: Type.STRING },
+        ipa_hint: { type: Type.STRING }
+      }
+    },
+    drills: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          type: { type: Type.STRING },
+          items: { 
+             type: Type.ARRAY, 
+             items: { type: Type.STRING } 
+          }, 
+          reps: { type: Type.INTEGER }
+        }
+      }
+    },
+    explanation_notes: {
+      type: Type.ARRAY,
+      items: { type: Type.STRING }
+    },
+    phoneme_errors: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          phoneme: { type: Type.STRING },
+          expected_word: { type: Type.STRING },
+          start_ts: { type: Type.NUMBER },
+          end_ts: { type: Type.NUMBER },
+          detected: { type: Type.STRING },
+          confidence: { type: Type.NUMBER }
+        }
+      }
+    },
+    prosody_deviations: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          type: { type: Type.STRING },
+          word: { type: Type.STRING },
+          measure: { type: Type.NUMBER }
+        }
+      }
+    },
+    pitch_contour: {
+      type: Type.ARRAY,
+      description: "Array of 15-20 points representing pitch contour (0-100 normalized) over time (0.0-1.0 normalized time).",
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          time: { type: Type.NUMBER, description: "Normalized time 0.0 to 1.0" },
+          user_pitch: { type: Type.NUMBER, description: "Normalized pitch 0-100" },
+          native_pitch: { type: Type.NUMBER, description: "Normalized pitch 0-100" }
+        }
+      }
+    },
+    pronunciation_guide: {
+      type: Type.ARRAY,
+      description: "A guide for key difficult sounds in the reference text, explaining articulation.",
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          segment: { type: Type.STRING, description: "The word or sound (e.g. 'Th' in 'Think')" },
+          tip: { type: Type.STRING, description: "Articulation advice (e.g. 'Tongue between teeth')" }
+        }
+      }
+    },
+    confidence: { type: Type.NUMBER }
+  },
+  required: ["summary", "overall_score", "pronunciation_score", "intelligibility_score", "prioritized_actions", "model_phrase", "drills", "pitch_contour"]
+};
+
+// 1. API routes FIRST
+app.post("/api/analyze-audio", async (req, res) => {
+  try {
+    const { audioBase64, userProfile, referenceText, targetPhoneme } = req.body;
+    if (!audioBase64) {
+      return res.status(400).json({ error: "Missing audioBase64" });
+    }
+    
+    const client = getGemini();
+
+    let promptInstruction = `
+    User Profile: ${JSON.stringify(userProfile)}
+    Reference Text (Expected): "${referenceText}"
+    ${targetPhoneme ? `TARGET PHONEME TO EVALUATE: "${targetPhoneme}". Focus feedback on this sound.` : ''}
+    
+    Analyze the attached audio recording against the reference text.
+    `;
+
+    if (userProfile.target_language && userProfile.target_language !== 'English') {
+        promptInstruction += `
+        \nTARGET LANGUAGE: ${userProfile.target_language}. 
+        Evaluate pronunciation based on standard ${userProfile.target_language} phonology.
+        `;
+    }
+
+    if (userProfile.level === 'advanced') {
+      promptInstruction += `
+      \nIMPORTANT: User is ADVANCED. If Overall Score >= 90, you MUST generate advanced drills like 'connected_speech_challenge', 'idiomatic_expression_practice', 'intonation_practice', 'role_play', or 'accent_practice'. Focus feedback on naturalness, rhythm, and connected speech (linking, elision, assimilation).
+      `;
+    }
+    
+    if (userProfile.accent_reduction_goal) {
+      promptInstruction += `
+      \nIMPORTANT: User is targeting '${userProfile.accent_reduction_goal}' accent. Evaluate strict adherence to this accent's phonology (e.g., rhoticity, vowel quality). If they fail to match the accent, provide an 'accent_practice' drill.
+      `;
+    }
+
+    const response = await client.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: {
+        parts: [
+          {
+            inlineData: {
+              mimeType: "audio/wav",
+              data: audioBase64
+            }
+          },
+          {
+            text: promptInstruction
+          }
+        ]
+      },
+      config: {
+        systemInstruction: SYSTEM_PROMPT,
+        responseMimeType: "application/json",
+        responseSchema: analysisSchema,
+        temperature: 0.4
+      }
+    });
+
+    const textResponse = response.text;
+    if (!textResponse) {
+      return res.status(500).json({ error: "No response from AI" });
+    }
+
+    res.json(JSON.parse(textResponse));
+  } catch (err: any) {
+    console.error("Gemini Analysis Express Error:", err);
+    res.status(500).json({ error: err.message || "AI Analysis failed" });
+  }
+});
+
+app.post("/api/generate-tts", async (req, res) => {
+  try {
+    const { text } = req.body;
+    if (!text) {
+      return res.status(400).json({ error: "Missing text for TTS" });
+    }
+
+    const client = getGemini();
+    const response = await client.models.generateContent({
+      model: "gemini-3.1-flash-tts-preview",
+      contents: [{ parts: [{ text }] }],
+      config: {
+        responseModalities: [Modality.AUDIO],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: 'Kore' },
+          },
+        },
+      },
+    });
+
+    const audioData = response.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    if (!audioData) {
+      return res.status(500).json({ error: "No TTS audio generated" });
+    }
+    res.json({ audioData });
+  } catch (err: any) {
+    console.error("TTS Express Error:", err);
+    res.status(500).json({ error: err.message || "TTS generation failed" });
+  }
+});
+
+app.post("/api/generate-lesson-plan", async (req, res) => {
+  try {
+    const { userProfile } = req.body;
+    if (!userProfile) {
+      return res.status(400).json({ error: "Missing userProfile" });
+    }
+
+    const client = getGemini();
+
+    const lessonSchema: Schema = {
+      type: Type.OBJECT,
+      properties: {
+        context: { type: Type.STRING, description: "A very short scenario title (e.g. 'Ordering Coffee')" },
+        prompt: { type: Type.STRING, description: "A sentence for the user to practice speaking." }
+      },
+      required: ["context", "prompt"]
+    };
+
+    const systemPrompt = `
+      You are an adaptive language coach. Create a SINGLE practice sentence for the user.
+      Context: User is a ${userProfile.level} learner. Motivation: ${userProfile.motivation}. Native Language: ${userProfile.native_language}. Target Language: ${userProfile.target_language}. Target Accent: ${userProfile.accent_reduction_goal || 'Standard'}.
+      
+      Rules:
+      - Beginner: Simple subject-verb-object, everyday vocabulary.
+      - Intermediate: Compound sentences, more descriptive.
+      - Advanced: Idiomatic expressions, nuance, complex structures.
+      - Align content with their motivation (e.g., Travel -> ordering food, Career -> meeting intro).
+      - Ensure vocabulary and phrasing aligns with the Target Language & Accent (e.g. 'biscuit' vs 'cookie').
+      - The prompt must be a single sentence or question suitable for speech practice.
+    `;
+
+    const response = await client.models.generateContent({
+      model: "gemini-3.5-flash",
+      contents: { parts: [{ text: "Generate a practice prompt." }] },
+      config: {
+        systemInstruction: systemPrompt,
+        responseMimeType: "application/json",
+        responseSchema: lessonSchema,
+        temperature: 0.7
+      }
+    });
+
+    const textResponse = response.text;
+    if (!textResponse) {
+      return res.status(500).json({ error: "No response from AI" });
+    }
+
+    res.json(JSON.parse(textResponse));
+  } catch (err: any) {
+    console.error("Lesson Gen Express Error:", err);
+    // Return a safe fallback since we still want the application to be usable
+    res.json({
+      context: "Daily Practice",
+      prompt: "The quick brown fox jumps over the lazy dog."
+    });
+  }
+});
+
+// Configure Vite middleware in dev or static files in production
+async function startServer() {
+  if (process.env.NODE_ENV !== "production") {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: "spa",
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distPath = path.join(process.cwd(), "dist");
+    app.use(express.static(distPath));
+    app.get("*", (req, res) => {
+      res.sendFile(path.join(distPath, "index.html"));
+    });
+  }
+
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+  });
+}
+
+startServer();

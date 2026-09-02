@@ -1,0 +1,10 @@
+{
+  "name": "Slang",
+  "description": "An AI-powered pronunciation and fluency coach that provides real-time phonetic analysis, corrective feedback, and tailored exercises.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
