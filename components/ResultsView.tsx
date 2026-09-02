@@ -16,7 +16,7 @@ interface ResultsViewProps {
   isDarkMode?: boolean;
 }
 
-const ProsodyItem = ({ deviation }: { deviation: ProsodyDeviation }) => {
+const ProsodyItem: React.FC<{ deviation: ProsodyDeviation }> = ({ deviation }) => {
   const val = Math.max(-1, Math.min(1, deviation.measure));
   const isNegative = val < 0;
   const widthPct = Math.abs(val) * 50; 
