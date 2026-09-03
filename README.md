@@ -4,6 +4,8 @@
 
 `TypeScript` · `React` · `Vite` · `Gemini` · `Web Audio`
 
+**[Try it live →](https://slang-ossamamokhtars-projects.vercel.app)**
+
 ![Slang daily practice](docs/screenshot.png)
 
 ---
