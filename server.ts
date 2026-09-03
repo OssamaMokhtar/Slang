@@ -320,7 +320,9 @@ app.post("/api/analyze-audio", async (req, res) => {
     res.json(JSON.parse(textResponse));
   } catch (err: any) {
     console.error("Gemini Analysis Express Error:", err);
-    res.status(500).json({ error: err.message || "AI Analysis failed" });
+    // Opaque to the client: err.message can disclose server configuration
+    // state (it previously returned the literal GEMINI_API_KEY error).
+    res.status(500).json({ error: "Audio analysis failed. Please try again." });
   }
 });
 
@@ -352,7 +354,7 @@ app.post("/api/generate-tts", async (req, res) => {
     res.json({ audioData });
   } catch (err: any) {
     console.error("TTS Express Error:", err);
-    res.status(500).json({ error: err.message || "TTS generation failed" });
+    res.status(500).json({ error: "Speech generation failed. Please try again." });
   }
 });
 
@@ -406,10 +408,15 @@ app.post("/api/generate-lesson-plan", async (req, res) => {
     res.json(JSON.parse(textResponse));
   } catch (err: any) {
     console.error("Lesson Gen Express Error:", err);
-    // Return a safe fallback since we still want the application to be usable
+    // Keep the app usable, but mark the response as degraded so a broken
+    // deployment is distinguishable from a healthy one. Previously this
+    // returned a canned sentence indistinguishable from real output, which
+    // made a fully non-functional deployment look fine.
+    res.setHeader("X-Degraded", "lesson-plan-fallback");
     res.json({
       context: "Daily Practice",
-      prompt: "The quick brown fox jumps over the lazy dog."
+      prompt: "The quick brown fox jumps over the lazy dog.",
+      degraded: true
     });
   }
 });
