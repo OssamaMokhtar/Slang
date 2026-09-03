@@ -5,6 +5,6 @@
  * its rate limiting and input sanitisation cannot drift between the two.
  * server.ts skips binding a port when process.env.VERCEL is set.
  */
-import { app } from "../server";
+import { app } from "../server.js";
 
 export default app;
